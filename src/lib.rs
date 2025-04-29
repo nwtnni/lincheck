@@ -252,7 +252,7 @@ impl Lincheck {
     /// the parallel execution is linearizable to some sequential execution.
     ///
     /// It returns a non-linearizable execution if the test fails.
-    pub fn verify<Conc>(&self) -> Result<(), Execution<ConcOp<Conc>, ConcRet<Conc>>>
+    pub fn verify<Conc>(&self) -> Result<(), Option<Execution<ConcOp<Conc>, ConcRet<Conc>>>>
     where
         Conc: ConcurrentSpec + Send + Sync + 'static,
         Conc::Seq: Send + Sync + 'static,
@@ -260,12 +260,15 @@ impl Lincheck {
         ConcRet<Conc>: PartialEq + Debug + Send + Clone,
     {
         let result = TestRunner::default().run(&any::<Scenario<ConcOp<Conc>>>(), |scenario| {
-            check_scenario_with_loom::<Conc>(scenario)
-                .map_err(|_| TestCaseError::Fail("Non-linearizable execution".into()))
+            check_scenario_with_loom::<Conc>(scenario).map_err(|error| match error {
+                Some(_) => TestCaseError::Fail("Non-linearizable execution".into()),
+                None => TestCaseError::Fail("Internal panic".into()),
+            })
         });
 
         match result {
             Ok(_) => Ok(()),
+            Err(TestError::Fail(reason, _)) if reason == "Internal panic".into() => Err(None),
             Err(TestError::Fail(_, scenario)) => {
                 // rerun the scenario to get the failing execution
                 Err(check_scenario_with_loom::<Conc>(scenario).unwrap_err())
@@ -283,9 +286,10 @@ impl Lincheck {
             Send + Sync + UnwindSafe + Clone + Arbitrary + Debug + 'static,
         <Conc::Seq as SequentialSpec>::Ret: PartialEq + Debug + Send + Clone,
     {
-        let result = self.verify::<Conc>();
-        if let Err(execution) = result {
-            panic!("Non-linearizable execution: \n\n {}", execution);
+        match self.verify::<Conc>() {
+            Ok(()) => (),
+            Err(None) => panic!("Internal panic"),
+            Err(Some(execution)) => panic!("Non-linearizable execution: \n\n {}", execution),
         }
     }
 }

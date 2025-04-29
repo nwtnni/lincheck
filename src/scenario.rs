@@ -1,5 +1,6 @@
 //! The [Scenario] and how to execute and check it.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use loom::thread;
 use std::fmt::Debug;
 use std::panic::{self, UnwindSafe};
@@ -31,16 +32,31 @@ pub struct Scenario<Op> {
 /// This is the only way to return a value from loom model-checker.
 pub fn check_scenario_with_loom<Conc>(
     scenario: Scenario<ConcOp<Conc>>,
-) -> Result<(), Execution<ConcOp<Conc>, ConcRet<Conc>>>
+) -> Result<(), Option<Execution<ConcOp<Conc>, ConcRet<Conc>>>>
 where
     Conc: ConcurrentSpec + Send + Sync + 'static,
     Conc::Seq: Send + Sync + 'static,
     ConcOp<Conc>: Send + Sync + Clone + Debug + UnwindSafe + 'static,
     ConcRet<Conc>: PartialEq + Clone + Debug + Send,
 {
-    // temporarily disable the panic hook to avoid printing the panic message
-    let old_hook = panic::take_hook();
-    panic::set_hook(Box::new(|_| {}));
+    static HOOK: AtomicBool = AtomicBool::new(false);
+
+    if !HOOK.load(Ordering::Relaxed) {
+        // temporarily disable the panic hook to avoid printing the panic message
+        let old_hook = panic::take_hook();
+
+        panic::set_hook(Box::new(move |info| {
+            if info
+                .payload()
+                .downcast_ref::<Execution<ConcOp<Conc>, ConcRet<Conc>>>()
+                .is_none()
+            {
+                old_hook(info);
+            }
+        }));
+
+        HOOK.store(true, Ordering::Relaxed);
+    }
 
     // catch the panic and return the panic payload
     let result = panic::catch_unwind(|| {
@@ -53,14 +69,12 @@ where
         });
     });
 
-    // restore the panic hook
-    panic::set_hook(old_hook);
-
     result.map_err(|payload| {
         // recover the failing execution from the panic payload
-        *payload
+        payload
             .downcast::<Execution<ConcOp<Conc>, ConcRet<Conc>>>()
-            .unwrap_or_else(|_| panic!("loom::model panicked with unknown payload"))
+            .map(|execution| *execution)
+            .ok()
     })
 }
 
