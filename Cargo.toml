@@ -20,5 +20,5 @@ categories = ["development-tools::testing"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-loom = "0.6"
+loom = "0.7"
 proptest = "1.1"
